@@ -6,7 +6,7 @@ enum Mode {
     Vcf,
 }
 
-fn trim_left(alleles: &[String]) -> (usize, Vec<String>) {
+fn trim_left<'a>(alleles: Vec<&'a str>) -> (usize, Vec<&'a str>) {
     if alleles.is_empty() {
         return (0, vec![]);
     }
@@ -26,11 +26,11 @@ fn trim_left(alleles: &[String]) -> (usize, Vec<String>) {
         }
     }
 
-    let new_alleles: Vec<String> = alleles.iter().map(|x| x[trimmed..].to_string()).collect();
+    let new_alleles: Vec<&'a str> = alleles.iter().map(|x| &x[trimmed..]).collect();
     (trimmed, new_alleles)
 }
 
-fn trim_right(alleles: &[String]) -> (usize, Vec<String>) {
+fn trim_right<'a>(alleles: Vec<&'a str>) -> (usize, Vec<&'a str>) {
     if alleles.is_empty() {
         return (0, vec![]);
     }
@@ -51,9 +51,9 @@ fn trim_right(alleles: &[String]) -> (usize, Vec<String>) {
         }
     }
 
-    let new_alleles: Vec<String> = alleles
+    let new_alleles: Vec<&'a str> = alleles
         .iter()
-        .map(|x| x[..(x.len() - trimmed)].to_string())
+        .map(|x| &x[..(x.len() - trimmed)])
         .collect();
     (trimmed, new_alleles)
 }
@@ -96,66 +96,184 @@ fn roll_right(sequence: &String, alleles: &[String], ref_pos: usize, bound: usiz
     d
 }
 
+fn normalize<'a>(
+    sequence: &str,
+    mut interval: (usize, usize),
+    alleles: Vec<&'a str>,
+    mut bounds: Option<(usize, usize)>,
+    mut mode: Option<Mode>,
+    mut anchor_length: Option<usize>,
+    mut trim: Option<bool>,
+) -> Result<((usize, usize), Vec<&'a str>), Box<dyn std::error::Error>> {
+    if let Some(_) = bounds {
+    } else {
+        bounds = Some((0, sequence.len()))
+    };
+    if let Some(_) = mode {
+    } else {
+        mode = Some(Mode::Expand)
+    };
+    if let Some(_) = anchor_length {
+    } else {
+        anchor_length = Some(0)
+    };
+    if let Some(_) = trim {
+    } else {
+        trim = Some(true)
+    };
+    let (start, end) = interval;
+    if start > end {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "Invalid interval: end ({}) is less than start ({})",
+                end, start
+            ),
+        )));
+    }
+
+    let left_anchor;
+    let right_anchor;
+    if let Some(Mode::Vcf) = mode {
+        if anchor_length.unwrap() == 0 {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("May not provide non-zero anchor size with VCF normalization mode"),
+            )));
+        }
+        if !trim.unwrap()  {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("May not disable trimming with VCF normalization mode"),
+            )));
+        }
+        left_anchor = 1;
+        right_anchor = 0;
+        mode = Some(Mode::LeftShuffle);
+    } else {
+        left_anchor = anchor_length.unwrap();
+        right_anchor = anchor_length.unwrap();
+    }
+
+    // TODO raises value error here bc of requirement that first allele (REF) is None
+    // seems unnecessary...
+
+    if trim.unwrap() {
+        let (left_trimmed, alleles) = trim_left(alleles);
+        interval.0 += left_trimmed;
+        let (right_trimmed, alleles) = trim_right(alleles);
+        interval.1 -= right_trimmed;
+    }
+
+    let lens: Vec<usize> = alleles.iter().map(|a| a.len()).collect();
+
+
+    Ok(((0, 1), vec![""]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn test_normalize() {
+        let sequence = "CCCCCCCCACACACACACTAGCAGCAGCA";
+        let (bounds, normalized_alleles) = normalize(
+            sequence,
+            (22, 25),
+            vec!["", "GC", "AGCAC"],
+            None,
+            Some(Mode::TrimOnly),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(bounds, (22, 24));
+        assert_eq!(normalized_alleles, vec!["AG", "G", "AGCA"]);
+
+        let (bounds, normalized_alleles) = normalize(
+            sequence,
+            (22, 22),
+            vec!["", "AGC"],
+            None,
+            Some(Mode::RightShuffle),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(bounds, (29, 29));
+        assert_eq!(normalized_alleles, vec!["", "GCA"]);
+
+        let (bounds, normalized_alleles) = normalize(
+            sequence,
+            (22, 22),
+            vec!["", "AGC"],
+            None,
+            Some(Mode::Expand),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(bounds, (19, 29));
+        assert_eq!(normalized_alleles, vec!["AGCAGCAGCA", "AGCAGCAGCAGCA"]);
+    }
+
+    #[test]
     fn test_trim_left() {
-        let mut alleles: Vec<String> = vec![String::from(""), String::from("AA")];
+        let mut alleles: Vec<&str> = vec!["", "AA"];
         let mut num_trimmed: usize;
-        let mut new_alleles: Vec<String>;
-        (num_trimmed, new_alleles) = trim_left(&alleles);
+        let mut new_alleles: Vec<&str>;
+        (num_trimmed, new_alleles) = trim_left(alleles);
         assert_eq!(num_trimmed, 0);
         assert_eq!(new_alleles, vec!["".to_string(), "AA".to_string()]);
 
-        alleles = vec![String::from("A"), String::from("AA")];
-        (num_trimmed, new_alleles) = trim_left(&alleles);
+        alleles = vec!["A", "AA"];
+        (num_trimmed, new_alleles) = trim_left(alleles);
         assert_eq!(num_trimmed, 1);
         assert_eq!(new_alleles, vec!["".to_string(), "A".to_string()]);
 
-        alleles = vec![String::from("AT"), String::from("AA")];
-        (num_trimmed, new_alleles) = trim_left(&alleles);
+        alleles = vec!["AT", "AA"];
+        (num_trimmed, new_alleles) = trim_left(alleles);
         assert_eq!(num_trimmed, 1);
         assert_eq!(new_alleles, vec!["T".to_string(), "A".to_string()]);
 
-        alleles = vec![String::from("AA"), String::from("AA")];
-        (num_trimmed, new_alleles) = trim_left(&alleles);
+        alleles = vec!["AA", "AA"];
+        (num_trimmed, new_alleles) = trim_left(alleles);
         assert_eq!(num_trimmed, 2);
         assert_eq!(new_alleles, vec!["".to_string(), "".to_string()]);
 
-        alleles = vec![String::from("CAG"), String::from("CG")];
-        (num_trimmed, new_alleles) = trim_left(&alleles);
+        alleles = vec!["CAG", "CG"];
+        (num_trimmed, new_alleles) = trim_left(alleles);
         assert_eq!(num_trimmed, 1);
         assert_eq!(new_alleles, vec!["AG".to_string(), "G".to_string()]);
     }
 
     #[test]
     fn test_trim_right() {
-        let mut alleles: Vec<String> = vec![String::from(""), String::from("AA")];
+        let mut alleles: Vec<&str> = vec!["", "AA"];
         let mut num_trimmed: usize;
-        let mut new_alleles: Vec<String>;
-        (num_trimmed, new_alleles) = trim_right(&alleles);
+        let mut new_alleles: Vec<&str>;
+        (num_trimmed, new_alleles) = trim_right(alleles);
         assert_eq!(num_trimmed, 0);
         assert_eq!(new_alleles, vec!["".to_string(), "AA".to_string()]);
 
-        alleles = vec![String::from("A"), String::from("AA")];
-        (num_trimmed, new_alleles) = trim_right(&alleles);
+        alleles = vec!["A", "AA"];
+        (num_trimmed, new_alleles) = trim_right(alleles);
         assert_eq!(num_trimmed, 1);
         assert_eq!(new_alleles, vec!["".to_string(), "A".to_string()]);
 
-        alleles = vec![String::from("AT"), String::from("AA")];
-        (num_trimmed, new_alleles) = trim_right(&alleles);
+        alleles = vec!["AT", "AA"];
+        (num_trimmed, new_alleles) = trim_right(alleles);
         assert_eq!(num_trimmed, 0);
         assert_eq!(new_alleles, vec!["AT".to_string(), "AA".to_string()]);
 
-        alleles = vec![String::from("AA"), String::from("AA")];
-        (num_trimmed, new_alleles) = trim_right(&alleles);
+        alleles = vec!["AA", "AA"];
+        (num_trimmed, new_alleles) = trim_right(alleles);
         assert_eq!(num_trimmed, 2);
         assert_eq!(new_alleles, vec!["".to_string(), "".to_string()]);
 
-        alleles = vec![String::from("CAG"), String::from("CG")];
-        (num_trimmed, new_alleles) = trim_right(&alleles);
+        alleles = vec!["CAG", "CG"];
+        (num_trimmed, new_alleles) = trim_right(alleles);
         assert_eq!(num_trimmed, 1);
         assert_eq!(new_alleles, vec!["CA".to_string(), "C".to_string()]);
     }
@@ -194,6 +312,5 @@ mod tests {
         alleles = vec![String::from(""), String::from("ACGT")];
         roll_index = roll_right(&sequence, &alleles, 0, 7);
         assert_eq!(roll_index, 8);
-
     }
 }
